@@ -32,3 +32,18 @@ def download_images( dataset_id, output_directory, downsample_factor = 3 ) :
         image_url  = "http://api.brain-map.org/api/v2/section_image_download/%d?downsample=%d" % (i['id'],downsample_factor)
         image_path = os.path.join( output_directory, '%04d_%d.jpg' % (i['section_number'],dataset_id)    )
         urllib.request.urlretrieve(image_url, image_path)
+        
+        
+def download_alignment_parameters( dataset_id, output_path, product_id = 3 ) :
+
+    # RMA query to get information for dataset metadata
+    query_url = \
+    "http://api.brain-map.org/api/v2/data/query.json?criteria=model::SectionDataSet,rma::criteria,[id$eq%d],rma::include,plane_of_section,specimen(donor(age)),treatments,alignment3d,section_images[failed$eqfalse](alignment2d)"\
+    % (dataset_id)
+
+    response = urllib.request.urlopen(query_url)
+    metadata = json.loads(response.read())['msg']
+    
+    with open( output_path, 'w') as mfile :
+        json.dump( metadata, mfile, indent=4 )
+
