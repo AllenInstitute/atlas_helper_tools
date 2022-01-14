@@ -160,19 +160,22 @@ def initialize_output( data, atlas_directory, downsample_factor = 3 ) :
     return output
 
   
-def populate_output( data, image_directory, downsample_factor, output, channel = BLUECHANNEL ) :
+def populate_output( data, image_directory, downsample_factor, output, channel = BLUECHANNEL, expression_directory = None ) :
     
     blueChannelIndex = 2
     xyres = pow(2,downsample_factor)
+    
+    if expression_directory :
+        output['expression'] = sitk.Image( output['volume'] )
     
     for x in data['section_images'] :
         
         basename = '%04d_%d.jpg' % (x['section_number'],data['id'])
         image_file = os.path.join( image_directory, basename )
         img = sitk.ReadImage( image_file )
+        img.SetSpacing((xyres,xyres))
         img = sitk.VectorIndexSelectionCast(img,channel,sitk.sitkUInt8)
         img = sitk.InvertIntensity(img)
-        img.SetSpacing((xyres,xyres))
         
         # tvs = transform from volume slice to image pixel
         tvs = sitk.AffineTransform(2)
@@ -185,6 +188,59 @@ def populate_output( data, image_directory, downsample_factor, output, channel =
         
         output['volume'][:,:,zindex] = resampled
         output['mask'][:,:,zindex] = 1
+        
+        if expression_directory is None :
+            continue
+            
+        image_file = os.path.join( expression_directory, basename )
+        exp = sitk.ReadImage( image_file )
+        exp.SetSpacing((xyres,xyres))
+        exp = sitk.VectorIndexSelectionCast(exp,REDCHANNEL,sitk.sitkUInt8)
+        
+        resampled = sitk.Resample( exp, output['reference_image'], tvs )
+        output['expression'][:,:,zindex] = resampled 
+        
+        
+def fill_in_missing( output ) :
+    
+    mx = sitk.GetArrayViewFromImage(output['mask'])[:, 0, 0]
+    marr = np.stack([np.roll(mx,1),mx,np.roll(mx,-1)])
+
+    vlist = ['volume','mask']
+    if 'expression' in output :
+        vlist.append('expression')
+
+    for n in range(len(mx)) :
+        
+        if not marr[1,n] : # missing section
+            
+            if marr[0,n] and marr[2,n] : # missing section have both neighoring section
+                print('%d: fill with average prev and next' % n)
+                for v in vlist :
+                    tprev = output[v][:,:,(n-1)]
+                    tnext = output[v][:,:,(n+1)]
+                    tprev = sitk.Cast( tprev, sitk.sitkFloat32 )
+                    tnext = sitk.Cast( tnext, sitk.sitkFloat32 )
+                    filler = sitk.Add( tprev, tnext )
+                    filler = sitk.Multiply( filler, 0.5 )
+                    filler = sitk.Cast( filler, sitk.sitkUInt8 )
+                    output[v][:,:,n] = filler
+                    
+            elif marr[0,n] : # missing section have prev. section neighbor
+                print('%d: fill with copy of previous' % n)
+                for v in vlist :
+                    filler = output[v][:,:,(n-1)]
+                    output[v][:,:,n] = filler
+                    
+            elif marr[2,n] : # missing section have next section neighbor
+                print('%d: fill with copy of next' % n)
+                for v in vlist :
+                    filler = output[v][:,:,(n+1)]
+                    output[v][:,:,n] = filler
+                    
+            else: # missing section has no adjacent neighbors
+                print('%d: leave blank' % n)
+                pass    
         
         
 def resample_to_atlas( data, atlas, output ) :
@@ -223,12 +279,20 @@ def resample_to_atlas( data, atlas, output ) :
 
     resampled = sitk.Resample( atlas['volume'], output['volume'], tva )
     output['resampled_atlas'] = resampled
+    
+    if 'expression' in output :
+        resampled = sitk.Resample( output['expression'], atlas['volume'], tav )
+        output['resampled_expression'] = resampled
+        
 
+def write_volumes( output, output_directory, only = None ) :
 
-def write_volumes( output, output_directory ) :
-
-    olist = ['volume','mask','resampled_volume','resampled_mask','resampled_atlas']
+    olist = ['volume','mask','resampled_volume','resampled_mask','resampled_atlas','expression','resampled_expression']
+    if only :
+        olist = [ x for x in olist if x in only ]
     for x in olist :
+        if not (x in output) :
+            continue
         output_file = os.path.join( output_directory, '%s.nii.gz' % x )
         sitk.WriteImage( output[x], output_file, True )
         
